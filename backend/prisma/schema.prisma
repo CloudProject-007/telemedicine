@@ -1,0 +1,197 @@
+// Telemedicine & Virtual Care - database schema
+// Conventions: uuid primary keys, snake_case tables, UTC timestamps.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  PATIENT
+  DOCTOR
+  ADMIN
+}
+
+enum AppointmentStatus {
+  PENDING
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+}
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  email        String   @unique
+  passwordHash String
+  name         String
+  phone        String?
+  role         Role     @default(PATIENT)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Notification preferences (delivered through Amazon SNS). Both are opt-in.
+  notifyEmail             Boolean @default(false)
+  notifySms               Boolean @default(false)
+  // Subscription of this user's email address to the SNS topic. Filtered by user id, so
+  // each person only receives their own messages. Null until they turn email on.
+  snsEmailSubscriptionArn String?
+
+  doctorProfile       DoctorProfile?
+  refreshTokens       RefreshToken[]
+  patientAppointments Appointment[]     @relation("PatientAppointments")
+  doctorAppointments  Appointment[]     @relation("DoctorAppointments")
+  documents           MedicalDocument[]
+  messages            Message[]
+
+  @@index([role])
+  @@map("users")
+}
+
+// One-to-one extension of User for role = DOCTOR. The primary key is the user id,
+// so a "doctorId" is the same value everywhere in the system.
+model DoctorProfile {
+  userId          String   @id @db.Uuid
+  specialty       String
+  experienceYears Int
+  consultationFee Int // in INR
+  qualification   String?
+  bio             String?
+  languages       String[]
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user  User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  slots AvailabilitySlot[]
+
+  @@index([specialty])
+  @@map("doctor_profiles")
+}
+
+model AvailabilitySlot {
+  id        String   @id @default(uuid()) @db.Uuid
+  doctorId  String   @db.Uuid
+  startTime DateTime
+  endTime   DateTime
+  isBooked  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  doctor      DoctorProfile @relation(fields: [doctorId], references: [userId], onDelete: Cascade)
+  appointment Appointment?
+
+  @@unique([doctorId, startTime])
+  @@index([doctorId, startTime, isBooked])
+  @@map("availability_slots")
+}
+
+model Appointment {
+  id              String            @id @default(uuid()) @db.Uuid
+  patientId       String            @db.Uuid
+  doctorId        String            @db.Uuid
+  // Nullable + unique: a slot can hold at most one active appointment. The link is
+  // cleared when an appointment is cancelled so the slot can be booked again.
+  slotId          String?           @unique @db.Uuid
+  // Snapshot of the slot times so history survives slot changes / cancellation.
+  scheduledStart  DateTime
+  scheduledEnd    DateTime
+  status          AppointmentStatus @default(PENDING)
+  reason          String?
+  cancelledReason String?
+  cancelledById   String?           @db.Uuid
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  patient      User              @relation("PatientAppointments", fields: [patientId], references: [id])
+  doctor       User              @relation("DoctorAppointments", fields: [doctorId], references: [id])
+  slot         AvailabilitySlot? @relation(fields: [slotId], references: [id], onDelete: SetNull)
+  prescription Prescription?
+  messages     Message[]
+  documents    MedicalDocument[]
+  reminderLogs ReminderLog[]
+
+  @@index([patientId, scheduledStart])
+  @@index([doctorId, scheduledStart])
+  @@index([status])
+  @@map("appointments")
+}
+
+model Prescription {
+  id            String    @id @default(uuid()) @db.Uuid
+  appointmentId String    @unique @db.Uuid
+  diagnosis     String?
+  notes         String
+  // [{ name, dosage, frequency, durationDays, instructions? }] - validated by zod at the edge
+  medications   Json
+  followUpDate  DateTime?
+  // The generated PDF in S3. Replaced every time the doctor edits the prescription.
+  pdfKey         String?
+  pdfGeneratedAt DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  appointment Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+
+  @@map("prescriptions")
+}
+
+// One row per reminder that was delivered, so a message the queue delivers twice is sent once.
+model ReminderLog {
+  appointmentId String   @db.Uuid
+  kind          String // "24h" | "1h"
+  sentAt        DateTime @default(now())
+
+  appointment Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+
+  @@id([appointmentId, kind])
+  @@map("reminder_logs")
+}
+
+model MedicalDocument {
+  id            String   @id @default(uuid()) @db.Uuid
+  patientId     String   @db.Uuid
+  appointmentId String?  @db.Uuid
+  fileKey       String   @unique
+  fileName      String
+  contentType   String
+  sizeBytes     Int
+  createdAt     DateTime @default(now())
+
+  patient     User         @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  appointment Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+
+  @@index([patientId, createdAt])
+  @@map("medical_documents")
+}
+
+model Message {
+  id            String   @id @default(uuid()) @db.Uuid
+  appointmentId String   @db.Uuid
+  senderId      String   @db.Uuid
+  text          String
+  sentAt        DateTime @default(now())
+
+  appointment Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  sender      User        @relation(fields: [senderId], references: [id])
+
+  @@index([appointmentId, sentAt])
+  @@map("messages")
+}
+
+// Opaque refresh tokens are stored hashed (sha256). Rotated on every use.
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
