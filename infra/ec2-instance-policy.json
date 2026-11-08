@@ -1,0 +1,43 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "FilesBucket",
+      "Effect": "Allow",
+      "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
+      "Resource": "arn:aws:s3:::REPLACE_FILES_BUCKET/*"
+    },
+    {
+      "Sid": "SnsPublishAndSubscribe",
+      "Effect": "Allow",
+      "Action": ["sns:Publish", "sns:Subscribe", "sns:Unsubscribe", "sns:GetSubscriptionAttributes"],
+      "Resource": "arn:aws:sns:REGION:ACCOUNT_ID:telecare-notifications"
+    },
+    {
+      "Sid": "SmsToPhoneNumbers",
+      "Effect": "Allow",
+      "Action": "sns:Publish",
+      "Resource": "*",
+      "Condition": { "Null": { "sns:TopicArn": "true" } }
+    },
+    {
+      "Sid": "ReminderQueue",
+      "Effect": "Allow",
+      "Action": ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
+      "Resource": "arn:aws:sqs:REGION:ACCOUNT_ID:telecare-reminders"
+    },
+    {
+      "Sid": "ManageSchedules",
+      "Effect": "Allow",
+      "Action": ["scheduler:CreateSchedule", "scheduler:DeleteSchedule"],
+      "Resource": "arn:aws:scheduler:REGION:ACCOUNT_ID:schedule/telecare-reminders/*"
+    },
+    {
+      "Sid": "PassSchedulerRole",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::ACCOUNT_ID:role/telecare-scheduler-role",
+      "Condition": { "StringEquals": { "iam:PassedToService": "scheduler.amazonaws.com" } }
+    }
+  ]
+}

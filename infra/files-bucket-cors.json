@@ -1,0 +1,10 @@
+{
+  "CORSRules": [
+    {
+      "AllowedOrigins": ["https://REPLACE_CLOUDFRONT_DOMAIN"],
+      "AllowedMethods": ["PUT"],
+      "AllowedHeaders": ["*"],
+      "MaxAgeSeconds": 3000
+    }
+  ]
+}
