@@ -1,0 +1,150 @@
+@import 'tailwindcss';
+
+/*
+ * Design tokens: "calm clinical".
+ * Chart paper background, pine-green ink, cobalt for actions, amber reserved for availability and
+ * waiting states. Change a value here and the whole app follows.
+ */
+@theme {
+  --font-sans: 'Hanken Grotesk Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-serif: 'Source Serif 4 Variable', ui-serif, Georgia, serif;
+
+  --color-paper: #f5f7f6;
+  --color-surface: #ffffff;
+  --color-ink: #133a33;
+  --color-ink-soft: #3f5c55;
+  --color-line: #d5dfdb;
+  --color-action: #2455d6;
+  --color-action-strong: #1b43ad;
+  --color-signal: #e8a317;
+  --color-signal-soft: #fbf1d6;
+  --color-ok: #1f7a4d;
+  --color-ok-soft: #e1f3ea;
+  --color-danger: #c23b2e;
+  --color-danger-soft: #fbe9e6;
+
+  --radius-control: 0.5rem;
+  --radius-panel: 0.75rem;
+}
+
+@layer base {
+  html {
+    background-color: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    min-height: 100dvh;
+    line-height: 1.6;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-serif);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 1.2;
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  :focus-visible {
+    outline: 3px solid var(--color-action);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer components {
+  /*
+   * The prescription slip: the one distinctive element of the app. A white ticket with a dashed
+   * tear line after the date stub and half-moon notches cut into the top and bottom edges.
+   */
+  .slip {
+    --stub: 6.25rem;
+    position: relative;
+    display: grid;
+    grid-template-columns: var(--stub) minmax(0, 1fr);
+    background: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-panel);
+  }
+
+  .slip::before,
+  .slip::after {
+    content: '';
+    position: absolute;
+    left: calc(var(--stub) - 0.5rem);
+    width: 1rem;
+    height: 1rem;
+    border-radius: 9999px;
+    background: var(--color-paper);
+    border: 1px solid var(--color-line);
+  }
+
+  .slip::before {
+    top: -0.5rem;
+    border-top-width: 0;
+  }
+
+  .slip::after {
+    bottom: -0.5rem;
+    border-bottom-width: 0;
+  }
+
+  .slip-stub {
+    border-right: 1px dashed var(--color-line);
+  }
+
+  /* One orchestrated entrance, used on the landing hero only. */
+  @keyframes rise-in {
+    from {
+      opacity: 0;
+      transform: translateY(0.75rem);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  .rise-in {
+    animation: rise-in 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  }
+
+  .skip-link {
+    position: absolute;
+    left: 1rem;
+    top: -4rem;
+    z-index: 100;
+    padding: 0.5rem 1rem;
+    background: var(--color-ink);
+    color: var(--color-paper);
+    border-radius: var(--radius-control);
+  }
+
+  .skip-link:focus {
+    top: 1rem;
+  }
+}
