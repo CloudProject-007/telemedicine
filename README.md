@@ -50,8 +50,8 @@ flowchart TB
     end
 
     subgraph Edge ["AWS Edge Network"]
-        CF["Amazon CloudFront CDN (Global Distribution)"]
         WAF["AWS WAF (DDoS / Rate Limiting)"]
+        CF["Amazon CloudFront CDN (Global Distribution)"]
         S3_WEB[("S3 Bucket: Web Client SPA Assets")]
     end
 
@@ -89,37 +89,41 @@ flowchart TB
         SMS_GW["Amazon SNS SMS (Transactional E.164)"]
     end
 
-    %% Ingress Flows
-    Clients -->|HTTPS:443| WAF --> CF
-    CF -->|Default Path: /*| S3_WEB
-    CF -->|API Path: /api/*| ALB
-    CF -->|Realtime Path: /socket.io/*| ALB
-    CF -->|Signed S3 Fetch| S3_FILES
+    %% Ingress Traffic
+    B_PATIENT -->|"HTTPS 443"| WAF
+    B_DOCTOR -->|"HTTPS 443"| WAF
+    B_ADMIN -->|"HTTPS 443"| WAF
+    WAF --> CF
 
-    %% Load Balancer & Compute
-    ALB -->|HTTP:4000 (sg-alb -> sg-app)| EC2_APP1
-    ALB -->|HTTP:4000 (sg-alb -> sg-app)| EC2_APP2
-    EC2_APP1 <-->|Cluster Sync| REDIS
-    EC2_APP2 <-->|Cluster Sync| REDIS
+    CF -->|"Default: /*"| S3_WEB
+    CF -->|"API: /api/*"| ALB
+    CF -->|"Realtime: /socket.io/*"| ALB
+    CF -->|"Signed URL Read"| S3_FILES
+
+    %% Load Balancing to Compute
+    ALB -->|"HTTP 4000 (sg-alb to sg-app)"| EC2_APP1
+    ALB -->|"HTTP 4000 (sg-alb to sg-app)"| EC2_APP2
+    EC2_APP1 <-->|"Cluster Sync"| REDIS
+    EC2_APP2 <-->|"Cluster Sync"| REDIS
 
     %% Persistence
-    EC2_APP1 -->|Port 5432 (sg-app -> sg-db)| RDS_MASTER
-    EC2_APP2 -->|Port 5432 (sg-app -> sg-db)| RDS_MASTER
-    RDS_MASTER -.->|Synchronous Replication| RDS_STANDBY
+    EC2_APP1 -->|"Port 5432 (sg-app to sg-db)"| RDS_MASTER
+    EC2_APP2 -->|"Port 5432 (sg-app to sg-db)"| RDS_MASTER
+    RDS_MASTER -.->|"Synchronous Replication"| RDS_STANDBY
 
-    %% Direct Storage Ingestion & PDF Generation
-    Clients -->|Direct Encrypted PUT (Pre-signed URL)| S3_FILES
-    EC2_APP1 -->|PutObject: Server Generated PDF| S3_FILES
+    %% Direct S3 Storage Ingestion
+    B_PATIENT -->|"Direct PUT (Pre-signed URL)"| S3_FILES
+    EC2_APP1 -->|"PutObject: PDF Prescriptions"| S3_FILES
 
     %% Asynchronous Pipeline
-    EC2_APP1 -->|Create One-time Schedule| EB_SCHED
-    EB_SCHED -->|Fire at Scheduled Timestamp| SQS_MAIN
-    SQS_MAIN -.->|Max Receives = 5 Exceeded| SQS_DLQ
-    SQS_MAIN -->|Long Poll: 20s Wait| EC2_APP1
-    SQS_MAIN -->|Long Poll: 20s Wait| EC2_APP2
-    EC2_APP1 -->|Publish Event (User ID Filter)| SNS
-    SNS -->|Filtered Delivery| EMAIL_GW
-    SNS -->|Direct SMS| SMS_GW
+    EC2_APP1 -->|"Create Schedule"| EB_SCHED
+    EB_SCHED -->|"Fire at Timestamp"| SQS_MAIN
+    SQS_MAIN -.->|"Max Receives = 5 Exceeded"| SQS_DLQ
+    SQS_MAIN -->|"Long Poll: 20s"| EC2_APP1
+    SQS_MAIN -->|"Long Poll: 20s"| EC2_APP2
+    EC2_APP1 -->|"Publish (User ID Filter)"| SNS
+    SNS -->|"Email Delivery"| EMAIL_GW
+    SNS -->|"Direct SMS"| SMS_GW
 ```
 
 ### 2.2 Security Group Firewall Perimeter
@@ -139,9 +143,9 @@ The backend implements a **Hexagonal / Clean Architecture** pattern where applic
 ```mermaid
 flowchart TD
     subgraph Presentation ["1. Presentation & Transport Layer"]
-        HTTP_ROUTES["Express 5 HTTP REST Handlers (/api/v1/*)"]
+        HTTP_ROUTES["Express 5 REST Handlers (/api/v1/*)"]
         WS_GATEWAY["Socket.IO WebSocket Gateway (/socket.io/*)"]
-        ZOD_SCHEMA["Zod Request Validation & Type Coercion"]
+        ZOD_VALIDATION["Zod Request Validation & Coercion"]
     end
 
     subgraph Domain_Services ["2. Application & Core Domain Services"]
@@ -150,26 +154,44 @@ flowchart TD
         PRES_SVC["Prescription Service (PDFKit Engine, Validation)"]
         DOC_SVC["Medical Documents Service (S3 Pre-Sign Engine)"]
         REM_SVC["Reminders Service (Queue Consumer & Idempotency)"]
-        NOTIF_SVC["Notification Engine (Multi-channel Dispatcher)"]
+        NOTIF_SVC["Notification Engine (Multi-Channel Dispatcher)"]
     end
 
-    subgraph Domain_Model ["3. Domain Entities & Database Layer"]
+    subgraph Domain_Model ["3. Domain Persistence Layer"]
         PRISMA_CLIENT["Prisma 6 ORM Data Mapper"]
         PG_MODELS[("PostgreSQL 16 Tables")]
     end
 
     subgraph Infra_Adapters ["4. Infrastructure Adapters (Ports & Adapters)"]
         S3_ADAPTER["Storage Adapter: S3StorageService (AWS SDK v3 / MinIO)"]
-        CDN_ADAPTER["CDN Adapter: CloudFrontSigner (RSA-SHA1 Key Pairs)"]
-        SCHED_ADAPTER["Scheduler Adapter: EventBridgeScheduler / LogScheduler"]
+        CDN_ADAPTER["CDN Adapter: CloudFrontSigner (RSA Key Pairs)"]
+        SCHED_ADAPTER["Scheduler Adapter: EventBridge / Local Logger"]
         QUEUE_ADAPTER["Queue Adapter: SqsConsumer (Long-Polling Worker)"]
         NOTIF_ADAPTER["Notifier Adapter: SnsNotifier (E.164 SMS + Topic Filter)"]
     end
 
-    %% Relationships
-    Presentation --> ZOD_SCHEMA --> Domain_Services
-    Domain_Services --> PRISMA_CLIENT --> PG_MODELS
-    Domain_Services --> Infra_Adapters
+    HTTP_ROUTES --> ZOD_VALIDATION
+    WS_GATEWAY --> ZOD_VALIDATION
+    ZOD_VALIDATION --> AUTH_SVC
+    ZOD_VALIDATION --> APPT_SVC
+    ZOD_VALIDATION --> PRES_SVC
+    ZOD_VALIDATION --> DOC_SVC
+
+    AUTH_SVC --> PRISMA_CLIENT
+    APPT_SVC --> PRISMA_CLIENT
+    PRES_SVC --> PRISMA_CLIENT
+    DOC_SVC --> PRISMA_CLIENT
+    REM_SVC --> PRISMA_CLIENT
+    NOTIF_SVC --> PRISMA_CLIENT
+    PRISMA_CLIENT --> PG_MODELS
+
+    PRES_SVC --> S3_ADAPTER
+    DOC_SVC --> S3_ADAPTER
+    DOC_SVC --> CDN_ADAPTER
+    PRES_SVC --> CDN_ADAPTER
+    APPT_SVC --> SCHED_ADAPTER
+    REM_SVC --> QUEUE_ADAPTER
+    NOTIF_SVC --> NOTIF_ADAPTER
 ```
 
 ---
@@ -184,7 +206,7 @@ To mitigate token replay attacks, authentication employs short-lived JWT access 
 sequenceDiagram
     autonumber
     actor Client as Client Browser
-    participant API as Auth Controller & Service
+    participant API as Auth Controller and Service
     participant DB as PostgreSQL (refresh_tokens)
 
     Note over Client,DB: Phase A: Initial Sign-In
@@ -223,9 +245,10 @@ To guarantee that no doctor slot is ever double-booked under intense concurrent 
 sequenceDiagram
     autonumber
     actor Patient as Patient Client
+    actor Doctor as Doctor Client
     participant ApptCtrl as Appointments Controller
     participant ApptSvc as Appointments Service
-    participant DB as PostgreSQL Transaction Engine
+    participant DB as PostgreSQL Database
     participant EventBridge as AWS EventBridge Scheduler
     participant SNS as AWS SNS
 
@@ -233,9 +256,9 @@ sequenceDiagram
     ApptCtrl->>ApptSvc: bookAppointment(patientId, slotId, reason)
     
     rect rgb(240, 248, 255)
-        Note over ApptSvc,DB: Atomic Database Transaction (SERIALIZABLE / REPEATABLE READ)
+        Note over ApptSvc,DB: Atomic Database Transaction (ACID Isolation)
         ApptSvc->>DB: BEGIN TRANSACTION
-        ApptSvc->>DB: UPDATE availability_slots SET isBooked = true<br/>WHERE id = slotId AND isBooked = false RETURNING *
+        ApptSvc->>DB: UPDATE availability_slots SET isBooked = true WHERE id = slotId AND isBooked = false
         alt Slot was already booked (Rows updated = 0)
             DB-->>ApptSvc: 0 Rows
             ApptSvc->>DB: ROLLBACK
@@ -250,8 +273,8 @@ sequenceDiagram
     Note over ApptSvc,SNS: Asynchronous Post-Confirmation Side Effects
     Doctor->>ApptCtrl: PATCH /api/v1/appointments/:id/status { status: "CONFIRMED" }
     ApptCtrl->>DB: UPDATE appointments SET status="CONFIRMED" WHERE id=:id AND status="PENDING"
-    ApptCtrl->>EventBridge: CreateSchedule: appt-<id>-24h (Fire at visit - 24 hours)
-    ApptCtrl->>EventBridge: CreateSchedule: appt-<id>-1h (Fire at visit - 1 hour)
+    ApptCtrl->>EventBridge: CreateSchedule: appt-id-24h (Fire at visit minus 24 hours)
+    ApptCtrl->>EventBridge: CreateSchedule: appt-id-1h (Fire at visit minus 1 hour)
     ApptCtrl->>SNS: Publish notification to Patient (Filtered by userId)
 ```
 
@@ -264,26 +287,26 @@ Reminders are scheduled without holding persistent timers in memory, guaranteein
 ```mermaid
 flowchart LR
     subgraph Trigger ["1. Schedule Target"]
-        CONFIRM["Doctor Confirms Visit"] -->|API Invocation| SCHED["EventBridge Scheduler"]
-        SCHED -->|Fire at T-24h & T-1h| SQS_QUEUE[("Amazon SQS Queue: telecare-reminders")]
+        CONFIRM["Doctor Confirms Visit"] -->|"API Invocation"| SCHED["EventBridge Scheduler"]
+        SCHED -->|"Fire at T-24h and T-1h"| SQS_QUEUE[("Amazon SQS Queue: telecare-reminders")]
     end
 
     subgraph Consumer ["2. Resilient Worker Processing"]
-        SQS_QUEUE -->|Long Poll: 20s| WORKER["SQS Consumer Loop (In-Process Worker)"]
-        WORKER -->|Validate Status & Idempotency| IDEMP_CHECK{"Valid & Not Sent?"}
+        SQS_QUEUE -->|"Long Poll: 20s"| WORKER["SQS Consumer Loop (In-Process Worker)"]
+        WORKER -->|"Validate Status and Idempotency"| IDEMP_CHECK{"Valid and Not Sent?"}
         
-        IDEMP_CHECK -->|No / Stale| DROP["Acknowledge & Delete Message"]
-        IDEMP_CHECK -->|Yes| DISPATCH["Dispatch Notifications"]
+        IDEMP_CHECK -->|"No / Stale"| DROP["Acknowledge and Delete Message"]
+        IDEMP_CHECK -->|"Yes"| DISPATCH["Dispatch Notifications"]
         
-        DISPATCH -->|Atomic INSERT (appointmentId, kind)| DBLOG[("PostgreSQL: reminder_logs")]
-        DISPATCH -->|Targeted Fan-out| SNS_TOPIC["Amazon SNS Topic"]
+        DISPATCH -->|"Atomic INSERT (appointmentId, kind)"| DBLOG[("PostgreSQL: reminder_logs")]
+        DISPATCH -->|"Targeted Fan-out"| SNS_TOPIC["Amazon SNS Topic"]
         
-        WORKER -.->|On 5 Consecutive Failures| DLQ[("SQS Dead-Letter Queue (DLQ)")]
+        WORKER -.->|"On 5 Consecutive Failures"| DLQ[("SQS Dead-Letter Queue (DLQ)")]
     end
 
     subgraph Channels ["3. Delivery Egress"]
-        SNS_TOPIC -->|User Attribute Filter: userId| EMAIL["SES / Email Subscription"]
-        SNS_TOPIC -->|Direct Transactional Route| SMS["Direct SMS Gateway (+E.164)"]
+        SNS_TOPIC -->|"User Attribute Filter: userId"| EMAIL["SES / Email Subscription"]
+        SNS_TOPIC -->|"Direct Transactional Route"| SMS["Direct SMS Gateway (+E.164)"]
     end
 ```
 
@@ -304,15 +327,15 @@ sequenceDiagram
     Note over Patient,Doctor: Step 1: Secure Handshake & Room Validation
     Patient->>SocketServer: Connect with Bearer JWT
     Doctor->>SocketServer: Connect with Bearer JWT
-    SocketServer->>SocketServer: Verify Appointment Membership & Time Window (T - 15m to T + 45m)
+    SocketServer->>SocketServer: Verify Appointment Membership & Time Window
     
     Patient->>SocketServer: emit("call:join", { appointmentId })
     Doctor->>SocketServer: emit("call:join", { appointmentId })
     SocketServer-->>Doctor: emit("call:peer-joined", { peerId: Patient.id })
 
     Note over Patient,Doctor: Step 2: Interactive Connectivity Establishment (ICE)
-    Patient->>Coturn: Query STUN/TURN for Public IP & Port Candidates
-    Doctor->>Coturn: Query STUN/TURN for Public IP & Port Candidates
+    Patient->>Coturn: Query STUN/TURN for Public Candidates
+    Doctor->>Coturn: Query STUN/TURN for Public Candidates
     
     Patient->>SocketServer: emit("webrtc:offer", { sdp: OfferSDP, to: Doctor.id })
     SocketServer->>Doctor: relay("webrtc:offer", { sdp: OfferSDP, from: Patient.id })
@@ -324,7 +347,8 @@ sequenceDiagram
     SocketServer->>Doctor: relay("webrtc:ice-candidate", { candidate })
 
     Note over Patient,Doctor: Step 3: Direct P2P Media Streaming (DTLS-SRTP)
-    Patient<<-->>Doctor: Direct Bidirectional Encrypted Audio / Video Flow (Bypasses API Server)
+    Patient->>Doctor: P2P Encrypted Audio / Video (DTLS-SRTP)
+    Doctor->>Patient: P2P Encrypted Audio / Video (DTLS-SRTP)
     
     Note over Patient,Doctor: Step 4: Real-Time Chat Audit Trail
     Patient->>SocketServer: emit("chat:send", { appointmentId, text })
@@ -349,7 +373,7 @@ sequenceDiagram
     Note over Client,CF: Phase 1: Direct-to-S3 Upload Negotiation
     Client->>API: POST /api/v1/documents/upload-url { fileName, contentType, sizeBytes }
     API->>API: Validate MIME type (PDF, PNG, JPEG, WebP) & Size (<= 10MB)
-    API->>API: Generate Cryptographic Key: patients/<patientId>/<uuid>-<filename>
+    API->>API: Generate Cryptographic Key: patients/patientId/uuid-filename
     API->>S3: PutObjectCommand (generatePreSignedUrl, expires: 15m)
     API-->>Client: 200 OK { uploadUrl, fileKey, headers }
 
@@ -400,7 +424,7 @@ sequenceDiagram
     Note over API,S3: Immutable Dynamic PDF Compilation
     API->>Engine: renderPrescriptionPdf({ clinic, doctor, patient, medications, notes })
     Engine-->>API: Binary PDF Buffer
-    API->>API: Compute Object Key: prescriptions/<apptId>/<prescId>/<timestamp>.pdf
+    API->>API: Compute Object Key: prescriptions/apptId/prescId/timestamp.pdf
     API->>S3: PutObjectCommand (Content-Type: application/pdf)
     API->>DB: UPDATE prescriptions SET pdfKey, pdfGeneratedAt = NOW()
     
@@ -445,7 +469,7 @@ erDiagram
         string passwordHash "Bcrypt Password Hash"
         string name "Full Name"
         string phone "E.164 Formatted Mobile Number"
-        enum role "PATIENT | DOCTOR | ADMIN"
+        string role "PATIENT, DOCTOR, ADMIN"
         boolean isActive "Soft Disable Flag"
         boolean notifyEmail "Opt-in Email Notifications"
         boolean notifySms "Opt-in SMS Notifications"
@@ -455,13 +479,13 @@ erDiagram
     }
 
     DOCTOR_PROFILE {
-        uuid userId PK,FK "References USER.id"
+        uuid userId PK "References USER.id"
         string specialty "Medical Specialty Category"
         int experienceYears "Years of Clinical Practice"
         int consultationFee "Fee in Base Units (INR)"
-        string qualification "Credentials (e.g., MBBS, MD)"
+        string qualification "Credentials e.g. MBBS, MD"
         string bio "Doctor Narrative Biography"
-        string[] languages "Spoken Languages"
+        string languages "Spoken Languages Array"
     }
 
     AVAILABILITY_SLOT {
@@ -479,7 +503,7 @@ erDiagram
         uuid slotId FK "Unique Nullable (availability_slots.id)"
         datetime scheduledStart "Snapshot of Slot Start"
         datetime scheduledEnd "Snapshot of Slot End"
-        enum status "PENDING | CONFIRMED | COMPLETED | CANCELLED"
+        string status "PENDING, CONFIRMED, COMPLETED, CANCELLED"
         string reason "Chief Clinical Complaint"
         string cancelledReason "Cancellation Note"
         uuid cancelledById "User Who Triggered Cancellation"
@@ -487,7 +511,7 @@ erDiagram
 
     PRESCRIPTION {
         uuid id PK "Primary Key (UUID v4)"
-        uuid appointmentId FK,UK "1-to-1 Reference (appointments.id)"
+        uuid appointmentId FK "1-to-1 Reference (appointments.id)"
         string diagnosis "Clinical Diagnosis"
         string notes "General Doctor Directives"
         jsonb medications "Array of Dosage, Frequency & Duration"
@@ -497,8 +521,8 @@ erDiagram
     }
 
     REMINDER_LOG {
-        uuid appointmentId PK,FK "References appointments.id"
-        string kind PK "Composite PK: '24h' | '1h'"
+        uuid appointmentId PK "References appointments.id"
+        string kind PK "Composite PK: 24h or 1h"
         datetime sentAt "UTC Dispatch Timestamp"
     }
 
@@ -538,11 +562,11 @@ The lifecycle of every appointment is governed by a deterministic finite state m
 
 ```mermaid
 stateDiagram-v2
-    [*] --> PENDING: Patient Claims Open Slot (isBooked = true)
+    [*] --> PENDING: Patient Claims Open Slot
     
     PENDING --> CONFIRMED: Doctor Approves Visit
     note right of CONFIRMED
-        1. Schedule EventBridge 24h & 1h alerts
+        1. Schedule EventBridge 24h and 1h alerts
         2. Publish SNS confirmation to Patient
         3. Authorize WebRTC consultation window
     end note
